@@ -8,52 +8,103 @@ from trading_ig import IGService, IGStreamService
 from trading_ig.config import config
 from trading_ig.lightstreamer import Subscription
 
-
+from protobuf import lightbringer_pb2
+from confluent_kafka import SerializingProducer
+from confluent_kafka.serialization import StringSerializer
+from confluent_kafka.schema_registry import SchemaRegistryClient
+from confluent_kafka.schema_registry.protobuf import ProtobufSerializer
 from confluent_kafka import Producer, KafkaError
 import json
 import ccloud_lib
-
+from uuid import uuid4
 
 epic = "CHART:CS.D.EURUSD.MINI.IP:1MINUTE"
-
-# HANDLE ALL KAFKA PRODUCTION INFO
-
-# Read arguments and configurations and initialize
-# args = ccloud_lib.parse_args()
 config_file = 'librdkafka.config'
-topic = "eurusd1minute"
+topic = "eurusd"
 conf = ccloud_lib.read_ccloud_config(config_file)
 
-# Create Producer instance
-producer = Producer({
-    'bootstrap.servers': conf['bootstrap.servers'],
-    'sasl.mechanisms': conf['sasl.mechanisms'],
-    'security.protocol': conf['security.protocol'],
-    'sasl.username': conf['sasl.username'],
-    'sasl.password': conf['sasl.password'],
-})
 
 # Create topic if needed
 ccloud_lib.create_topic(conf, topic)
-
 delivered_records = 0
+schema_registry_conf = {
+        'url': conf['schema.registry.url'],
+        'basic.auth.user.info': conf['schema.registry.basic.auth.user.info']}
+schema_registry_client = SchemaRegistryClient(schema_registry_conf)
+protobuf_serializer = ProtobufSerializer(lightbringer_pb2.CandlePrice,
+                                            schema_registry_client)
+producer_conf = {
+        'bootstrap.servers': conf['bootstrap.servers'],
+        'sasl.mechanisms': conf['sasl.mechanisms'],
+        'security.protocol': conf['security.protocol'],
+        'sasl.username': conf['sasl.username'],
+        'sasl.password': conf['sasl.password'],
+        'key.serializer': StringSerializer('utf_8'),
+        'value.serializer': protobuf_serializer}
+producer = SerializingProducer(producer_conf)
+print("Producing user records to topic {}. ^C to exit.".format(topic))
+
+
 
 #///////////////////////////////////////////////
-
+def delivery_report(err, msg):
+    """
+    Reports the failure or success of a message delivery.
+    Args:
+        err (KafkaError): The error that occurred on None on success.
+        msg (Message): The message that was produced or failed.
+    Note:
+        In the delivery report callback the Message.key() and Message.value()
+        will be the binary format as encoded by any configured Serializers and
+        not the same object that was passed to produce().
+        If you wish to pass the original object(s) for key and value to delivery
+        report callback we recommend a bound callback or lambda where you pass
+        the objects along.
+    """
+    if err is not None:
+        print("Delivery failed for User record {}: {}".format(msg.key(), err))
+        return
+    print('User record {} successfully produced to {} [{}] at offset {}'.format(
+        msg.key(), msg.topic(), msg.partition(), msg.offset()))
 
 # A simple function acting as a Subscription listener
 def on_prices_update(item_update):
     # print("price: %s " % item_update)
+    scale="1MINUTE"
+
+    candle_ltv = ("{LTV:<5}".format(**item_update["values"]))
+    # candle_ttv = ("{TTV:<5}".format(**item_update["values"]))
+    candle_utm = ("{UTM:<10}".format(**item_update["values"]))
+    candle_day_open_mid = ("{DAY_OPEN_MID:<5}".format(**item_update["values"]))
+    candle_day_net_chg_mid = ("{DAY_NET_CHG_MID:<5}".format(**item_update["values"]))
+    candle_day_perc_chg_mid = ("{DAY_PERC_CHG_MID:<5}".format(**item_update["values"]))
+    candle_day_high = ("{DAY_HIGH:<5}".format(**item_update["values"]))
+    candle_day_low = ("{DAY_LOW:<5}".format(**item_update["values"]))
+    candle_ofr_open = ("{OFR_OPEN:<5}".format(**item_update["values"]))
+    candle_ofr_high = ("{OFR_HIGH:<5}".format(**item_update["values"]))
+    candle_ofr_low = ("{OFR_LOW:<5}".format(**item_update["values"]))
+    candle_ofr_close = ("{OFR_CLOSE:<5}".format(**item_update["values"]))
+    candle_bid_open = ("{BID_OPEN:<5}".format(**item_update["values"]))
+    candle_bid_high = ("{BID_HIGH:<5}".format(**item_update["values"]))
+    candle_bid_low = ("{BID_LOW:<5}".format(**item_update["values"]))
+    candle_bid_close = ("{BID_CLOSE:<5}".format(**item_update["values"]))
+    candle_ltp_open = ("{LTP_OPEN:<5}".format(**item_update["values"]))
+    candle_ltp_high = ("{LTP_HIGH:<5}".format(**item_update["values"]))
+    candle_ltp_low = ("{LTP_LOW:<5}".format(**item_update["values"]))
+    candle_ltp_close = ("{LTP_CLOSE:<5}".format(**item_update["values"]))
+    candle_cons_end = int("{CONS_END:<1}".format(**item_update["values"]))
+    candle_cons_tick_count = int("{CONS_TICK_COUNT:<5}".format(**item_update["values"]))
+
+    candle_ltv = int(candle_ltv)
+    # candle_ttv = int(candle_ttv)
+
     
-    candle_open = "{OFR_OPEN:<5}".format(**item_update["values"])
-    candle_close = "{OFR_CLOSE:<5}".format(**item_update["values"])
-    candle_high = "{OFR_HIGH:<5}".format(**item_update["values"])
-    candle_low = "{OFR_LOW:<5}".format(**item_update["values"])
-    candle_end = "{CONS_END:<1}".format(**item_update["values"])
+    candle_end = int("{CONS_END:<1}".format(**item_update["values"]))
     name = "{stock_name:<19}".format(stock_name=item_update["name"])
-    candle_utm = "{UTM:<10}".format(**item_update["values"])
+    
     record_key = "{UTM:<10}".format(**item_update["values"])
     new_candle_end = int(candle_end)
+    
     if new_candle_end==1:
 
         s, ms = divmod(int(candle_utm), 1000)
@@ -79,9 +130,35 @@ def on_prices_update(item_update):
                     .format(msg.topic(), msg.partition(), msg.offset()))
 
         
-        record_value = json.dumps({'candle_open': candle_open, 'candle_close': candle_close, 'candle_high': candle_high, 'candle_low': candle_low, 'Name': name, 'candle_end': candle_end})
-        print("Producing record: {}\t{}".format(record_key, record_value))
-        producer.produce(topic, key=record_key, value=record_value, on_delivery=acked)
+        #record_value = json.dumps({'candle_open': candle_open, 'candle_close': candle_close, 'candle_high': candle_high, 'candle_low': candle_low, 'Name': name, 'candle_end': candle_end})
+        #print("Producing record: {}\t{}".format(record_key))
+        uid = str(uuid4())
+        candle = lightbringer_pb2.CandlePrice(uuid=uid, 
+                                        epic=epic, 
+                                        scale=scale, 
+                                        ltv=candle_ltv, 
+                                        # ttv=candle_ttv, 
+                                        day_open_mid=candle_day_open_mid,
+                                        day_net_chg_mid=candle_day_net_chg_mid,
+                                        day_perc_chg_mid=candle_day_perc_chg_mid,
+                                        day_high=candle_day_high,
+                                        day_low=candle_day_low,
+                                        ofr_open=candle_ofr_open,
+                                        ofr_high=candle_ofr_high,
+                                        ofr_low=candle_ofr_low,
+                                        ofr_close=candle_ofr_close,
+                                        bid_open=candle_bid_open,
+                                        bid_high=candle_bid_high,
+                                        bid_low=candle_bid_low,
+                                        bid_close=candle_bid_close,
+                                        ltp_open=candle_ltp_open,
+                                        ltp_high=candle_ltp_high,
+                                        ltp_low=candle_ltp_low,
+                                        ltp_close=candle_ltp_close,
+                                        cons_end=candle_cons_end,
+                                        cons_tick_count=candle_cons_tick_count)
+        producer.produce(topic=topic, key=uid, value=candle, on_delivery=delivery_report)
+        # producer.produce(topic, key=record_key, value=record_value, on_delivery=acked)
         producer.poll(0)
 
     
@@ -119,7 +196,7 @@ def main():
     subscription_prices = Subscription(
         mode="MERGE",
         items=["CHART:CS.D.EURUSD.MINI.IP:1MINUTE"],
-        fields=["UTM", "OFR_OPEN", "OFR_CLOSE", "OFR_HIGH", "OFR_LOW", "CONS_END"],
+        fields=["LTV", "UTM", "DAY_OPEN_MID", "DAY_NET_CHG_MID", "DAY_PERC_CHG_MID", "DAY_HIGH", "DAY_LOW", "OFR_OPEN", "OFR_HIGH", "OFR_LOW", "OFR_CLOSE", "BID_OPEN", "BID_HIGH", "BID_LOW", "BID_CLOSE", "LTP_OPEN", "LTP_HIGH", "LTP_LOW", "LTP_CLOSE", "CONS_END", "CONS_TICK_COUNT"],
     )
     # adapter="QUOTE_ADAPTER")
 
